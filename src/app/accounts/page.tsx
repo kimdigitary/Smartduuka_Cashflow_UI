@@ -1,217 +1,371 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useLedger } from "@/context/LedgerContext";
-import { formatMoney } from "@/lib/utils";
-import { Account, AccountType } from "@/types";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { formatMoney, calculateNet, getStatusColor } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Edit, Trash2, Plus, Landmark, Smartphone, Wallet, WalletCards } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Download, Edit, Trash2, Paperclip, FileText, LayoutList, Columns } from "lucide-react";
 import { toast } from "sonner";
-import { mockTransactions, mockAccounts, mockSettings } from "@/types"; // <-- Imported Dummy Data
+import { mockTransactions, mockEntities, mockAccounts, mockSettings } from "@/types";
 
-export default function AccountsPage() {
-  const { addAccount, updateAccount, deleteAccount, isLoaded } = useLedger(); // Kept for hydration and modal actions
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingAcc, setEditingAcc] = useState<Partial<Account>>({ type: "bank" });
+export default function TransactionsPage() {
+  const { deleteTransaction, isLoaded } = useLedger();
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterType, setFilterType] = useState("all");
+  const [viewMode, setViewMode] = useState<"standard" | "split">("standard");
 
-  if (!isLoaded) return null;
+  // Vault Viewer State
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [activeDoc, setActiveDoc] = useState<{name: string, data: string} | null>(null);
 
   // ========================================================================
-  // INJECTING DUMMY DATA HERE
+  // DUMMY DATA
   // ========================================================================
   const transactions = mockTransactions;
+  const entities = mockEntities;
   const accounts = mockAccounts;
   const settings = mockSettings;
 
-  const handleSave = () => {
-    if (!editingAcc.name) return toast.error("Account name is required");
-    if (editingAcc.id) {
-      updateAccount(editingAcc as Account);
-    } else {
-      addAccount({ ...editingAcc, id: `a_${Date.now()}` } as Account);
-    }
-    setIsModalOpen(false);
+  // Search & Filter Logic
+  const filteredTxs = transactions.filter((t) => {
+    const entName = entities.find((e) => e.id === t.entityId)?.name || "";
+    const matchTerm = entName.toLowerCase().includes(searchTerm.toLowerCase()) || (t.desc || "").toLowerCase().includes(searchTerm.toLowerCase());
+    return matchTerm && (filterType === "all" || t.type === filterType);
+  });
+
+  // Calculate Running Balances (Sort oldest to newest, calculate, then reverse for display)
+  // FIX: This Hook is now declared BEFORE the early return
+  const txsWithBalance = useMemo(() => {
+    const sorted = [...filteredTxs].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    let currentBalance = 0;
+    
+    const calculated = sorted.map((t) => {
+      const net = calculateNet(t);
+      if (t.type === "in") currentBalance += net;
+      else if (t.type === "out") currentBalance -= net;
+      
+      return { ...t, runningBalance: currentBalance };
+    });
+
+    return calculated.reverse(); // Show newest at the top
+  }, [filteredTxs]);
+
+  // Early return must happen AFTER all hooks have been declared
+  if (!isLoaded) return null;
+
+  // Split view arrays
+  const cashInTxs = txsWithBalance.filter(t => t.type === "in");
+  const cashOutTxs = txsWithBalance.filter(t => t.type === "out");
+
+  // Updated CSV Export to match new columns
+  const exportCSV = () => {
+    if (!txsWithBalance.length) return toast.error("No data to export");
+    let csv = "Date,Entity,Account,Cash In,Cash Out,Balance,Status,Description\n";
+    
+    txsWithBalance.forEach(t => {
+      const ent = entities.find(e => e.id === t.entityId)?.name || "Unknown";
+      const acc = accounts.find(a => a.id === t.accountId)?.name || "Unknown";
+      const net = calculateNet(t);
+      
+      const cashIn = t.type === "in" ? net : "";
+      const cashOut = t.type === "out" ? net : "";
+      
+      csv += `${t.date},"${ent}","${acc}",${cashIn},${cashOut},${t.runningBalance},${t.status},"${(t.desc || "").replace(/"/g, '""')}"\n`;
+    });
+    
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `ledger_export_${new Date().toISOString().split("T")[0]}.csv`;
+    a.click();
+    toast.success("Export successful");
   };
 
-  const handleDelete = (id: string) => {
-    if (transactions.some((t) => t.accountId === id)) {
-      return toast.error("Cannot delete account: It has linked transactions.");
-    }
-    if (confirm("Delete this account?")) deleteAccount(id);
+  const openViewer = (name: string, data: string) => {
+    setActiveDoc({ name, data });
+    setViewerOpen(true);
   };
 
-  const openModal = (acc?: Account) => {
-    setEditingAcc(acc || { type: "bank" });
-    setIsModalOpen(true);
-  };
+  // Helper to render standard table rows to keep code DRY between views
+  const renderTableRow = (t: any, showActions: boolean = true) => {
+    const entName = entities.find((e) => e.id === t.entityId)?.name || "Unknown";
+    const accName = accounts.find((a) => a.id === t.accountId)?.name || "Unknown";
+    const formattedDate = new Date(t.date).toLocaleDateString("en-GB", { day: '2-digit', month: 'short', year: 'numeric' });
+    const net = calculateNet(t);
 
-  const getAccountIcon = (type: string) => {
-    switch (type) {
-      case "bank": return <Landmark className="w-4 h-4 text-blue-500 dark:text-blue-400" />;
-      case "mobile": return <Smartphone className="w-4 h-4 text-green-500 dark:text-green-400" />;
-      case "cash": return <Wallet className="w-4 h-4 text-orange-500 dark:text-orange-400" />;
-      default: return <WalletCards className="w-4 h-4 text-slate-500 dark:text-slate-400" />;
-    }
+    return (
+      <TableRow key={t.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/50 dark:border-slate-800 transition-colors">
+        <TableCell className="text-slate-500 dark:text-slate-400 whitespace-nowrap">
+          {formattedDate}
+        </TableCell>
+
+        <TableCell className="font-medium text-slate-900 dark:text-slate-100">
+          <div className="flex items-center gap-2">
+            <span>{entName}</span>
+            {t.attachmentData && (
+              <button onClick={() => openViewer(t.attachmentName!, t.attachmentData!)} className="text-blue-500 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 transition-colors flex items-center bg-blue-50 dark:bg-blue-500/10 px-1.5 py-0.5 rounded text-[10px] border border-blue-100 dark:border-blue-500/20">
+                <Paperclip className="w-3 h-3 mr-1" /> View
+              </button>
+            )}
+          </div>
+          <div className="text-xs text-slate-400 dark:text-slate-500 font-normal mt-0.5 truncate max-w-[180px]">
+            {t.desc || "-"}
+          </div>
+        </TableCell>
+
+        <TableCell className="text-slate-600 dark:text-slate-300">
+          {accName}
+          <div className="text-[10px] text-slate-400 dark:text-slate-500 uppercase">
+            {t.category || "Uncategorized"}
+          </div>
+        </TableCell>
+
+        {/* Cash IN Column */}
+        <TableCell className="text-right font-bold text-green-600 dark:text-green-400">
+          {t.type === "in" ? formatMoney(net, settings.currency) : <span className="text-slate-300 dark:text-slate-700">-</span>}
+        </TableCell>
+
+        {/* Cash OUT Column */}
+        <TableCell className="text-right font-bold text-red-600 dark:text-red-400">
+          {t.type === "out" ? formatMoney(net, settings.currency) : <span className="text-slate-300 dark:text-slate-700">-</span>}
+        </TableCell>
+
+        {/* Running Balance */}
+        <TableCell className="text-right font-bold text-slate-800 dark:text-slate-200">
+          {formatMoney(t.runningBalance, settings.currency)}
+        </TableCell>
+
+        <TableCell className="text-center">
+          <Badge className={`uppercase text-[10px] font-bold ${getStatusColor(t.status)}`} variant="outline">
+            {t.status}
+          </Badge>
+        </TableCell>
+
+        {showActions && (
+          <TableCell className="text-right space-x-2 whitespace-nowrap">
+            <button className="text-slate-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
+              <Edit className="w-4 h-4 inline" />
+            </button>
+            <button onClick={() => { if(confirm("Permanently delete this record?")) deleteTransaction(t.id); }} className="text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400 transition-colors">
+              <Trash2 className="w-4 h-4 inline" />
+            </button>
+          </TableCell>
+        )}
+      </TableRow>
+    );
   };
 
   return (
     <div className="space-y-6">
-      <div className="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden transition-colors duration-200">
-        
-        {/* Header */}
-        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 flex justify-between items-center transition-colors duration-200">
-          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 uppercase tracking-wide">Account Statements</h3>
-          <Button 
-            onClick={() => openModal()} 
-            variant="secondary" 
-            size="sm" 
-            className="shadow-sm dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700 dark:border-slate-700 transition-colors"
-          >
-            <Plus className="w-4 h-4 mr-1" /> Add Account
-          </Button>
+      {/* Top Filter Bar */}
+      <div className="flex flex-col sm:flex-row justify-between items-center bg-white dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm gap-4 transition-colors duration-200">
+        <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-3 w-full max-w-xl">
+          <Input 
+            placeholder="Search descriptions or entities..." 
+            value={searchTerm} 
+            onChange={(e) => setSearchTerm(e.target.value)} 
+            className="flex-1 focus-visible:ring-orange-500 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500" 
+          />
+          <Select value={filterType} onValueChange={setFilterType}>
+            <SelectTrigger className="w-full sm:w-[150px] focus:ring-orange-500 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-100">
+              <SelectValue placeholder="All Types" />
+            </SelectTrigger>
+            <SelectContent className="dark:bg-slate-950 dark:border-slate-800">
+              <SelectItem value="all">All Types</SelectItem>
+              <SelectItem value="in">Cash In</SelectItem>
+              <SelectItem value="out">Cash Out</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
-        {/* Table Container (Responsive) */}
-        <div className="overflow-x-auto">
+        <div className="flex items-center space-x-2 w-full sm:w-auto">
+          {/* View Toggle */}
+          <div className="flex bg-slate-100 dark:bg-slate-900 p-1 rounded-lg border border-slate-200 dark:border-slate-800">
+            <Button 
+              variant={viewMode === "standard" ? "default" : "ghost"} 
+              size="sm" 
+              onClick={() => setViewMode("standard")}
+              className={`h-8 px-3 ${viewMode === "standard" ? "bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700" : "text-slate-500"}`}
+            >
+              <LayoutList className="w-4 h-4 mr-1.5" /> Table
+            </Button>
+            <Button 
+              variant={viewMode === "split" ? "default" : "ghost"} 
+              size="sm" 
+              onClick={() => setViewMode("split")}
+              className={`h-8 px-3 ${viewMode === "split" ? "bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700" : "text-slate-500"}`}
+            >
+              <Columns className="w-4 h-4 mr-1.5" /> Split
+            </Button>
+          </div>
+
+          <Button onClick={exportCSV} variant="outline" className="text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 dark:border-slate-800 transition-colors">
+            <Download className="w-4 h-4 sm:mr-2" /> <span className="hidden sm:inline">Export</span>
+          </Button>
+        </div>
+      </div>
+
+      {/* VIEW: STANDARD TABLE */}
+      {viewMode === "standard" && (
+        <div className="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden transition-colors duration-200">
           <Table>
             <TableHeader className="bg-slate-50/50 dark:bg-slate-900/50">
               <TableRow className="dark:border-slate-800 hover:bg-transparent">
-                <TableHead className="dark:text-slate-400">Account Name</TableHead>
-                <TableHead className="dark:text-slate-400">Type</TableHead>
-                <TableHead className="text-right dark:text-slate-400">Gross Cash In</TableHead>
-                <TableHead className="text-right dark:text-slate-400">Gross Cash Out</TableHead>
-                <TableHead className="text-right dark:text-slate-400">Net Position</TableHead>
+                <TableHead className="dark:text-slate-400">Date/Time</TableHead>
+                <TableHead className="dark:text-slate-400">Entity & Details</TableHead>
+                <TableHead className="dark:text-slate-400">Account</TableHead>
+                <TableHead className="text-right dark:text-slate-400">Cash IN</TableHead>
+                <TableHead className="text-right dark:text-slate-400">Cash OUT</TableHead>
+                <TableHead className="text-right dark:text-slate-400 font-semibold">Balance</TableHead>
+                <TableHead className="text-center dark:text-slate-400">Status</TableHead>
                 <TableHead className="text-right dark:text-slate-400">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {accounts.length === 0 ? (
+              {txsWithBalance.length === 0 ? (
                 <TableRow className="dark:border-slate-800 hover:bg-transparent">
-                  <TableCell colSpan={6} className="text-center py-12">
-                    <div className="flex flex-col items-center justify-center text-slate-500 dark:text-slate-400">
-                      <WalletCards className="w-10 h-10 mb-3 text-slate-300 dark:text-slate-600" />
-                      <p>No accounts created yet.</p>
-                    </div>
+                  <TableCell colSpan={8} className="text-center py-8 text-slate-500 dark:text-slate-400">
+                    No transactions found.
                   </TableCell>
                 </TableRow>
               ) : (
-                accounts.map((acc) => {
-                  let inTotal = 0, outTotal = 0, fees = 0;
-                  
-                  transactions.filter((t) => t.accountId === acc.id && t.status === "cleared").forEach((t) => {
-                    fees += t.fee;
-                    if (t.type === "in") inTotal += t.amount; 
-                    else outTotal += t.amount;
-                  });
-                  
-                  const net = inTotal - outTotal - fees;
-
-                  return (
-                    <TableRow key={acc.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/50 dark:border-slate-800 transition-colors">
-                      <TableCell className="font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap">
-                        {acc.name}
-                      </TableCell>
-                      
-                      <TableCell className="text-slate-600 dark:text-slate-300">
-                        <div className="flex items-center capitalize bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 px-2.5 py-1 rounded-md w-fit text-xs font-medium shadow-sm">
-                          <span className="mr-2">{getAccountIcon(acc.type)}</span>
-                          {acc.type}
-                        </div>
-                      </TableCell>
-                      
-                      <TableCell className="text-right text-green-600 dark:text-green-400 whitespace-nowrap">
-                        {formatMoney(inTotal, settings.currency)}
-                      </TableCell>
-                      
-                      <TableCell className="text-right text-slate-600 dark:text-slate-400 whitespace-nowrap">
-                        {formatMoney(outTotal + fees, settings.currency)}
-                      </TableCell>
-                      
-                      <TableCell className={`text-right font-bold whitespace-nowrap ${net >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
-                        {formatMoney(net, settings.currency)}
-                      </TableCell>
-                      
-                      <TableCell className="text-right space-x-2 whitespace-nowrap">
-                        <button 
-                          onClick={() => openModal(acc)} 
-                          className="text-slate-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors p-1"
-                        >
-                          <Edit className="w-4 h-4 inline" />
-                        </button>
-                        <button 
-                          onClick={() => handleDelete(acc.id)} 
-                          className="text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400 transition-colors p-1"
-                        >
-                          <Trash2 className="w-4 h-4 inline" />
-                        </button>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })
+                txsWithBalance.slice(0, settings.pageSize === "all" ? undefined : parseInt(settings.pageSize)).map(t => renderTableRow(t, true))
               )}
             </TableBody>
           </Table>
         </div>
-      </div>
+      )}
 
-      {/* Account Modal */}
-      <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
-        <DialogContent className="sm:max-w-sm bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800 transition-colors duration-200">
-          <DialogHeader>
-            <DialogTitle className="text-slate-900 dark:text-slate-100">
-              {editingAcc.id ? "Edit Account" : "Add Account"}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Account Name
-              </label>
-              <Input 
-                placeholder="e.g. Main Stanbic Acc" 
-                value={editingAcc.name || ""} 
-                onChange={(e) => setEditingAcc({ ...editingAcc, name: e.target.value })} 
-                className="focus-visible:ring-orange-500 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500" 
-              />
+      {/* VIEW: SPLIT SECTIONS (CASH IN vs CASH OUT) */}
+      {viewMode === "split" && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          {/* CASH IN Card */}
+          <div className="bg-white dark:bg-slate-950 rounded-xl border border-green-200 dark:border-green-900/30 shadow-sm overflow-hidden flex flex-col">
+            <div className="bg-green-50 dark:bg-green-900/10 p-4 border-b border-green-100 dark:border-green-900/20 flex justify-between items-center">
+              <h3 className="font-semibold text-green-800 dark:text-green-400 flex items-center">
+                <span className="w-2 h-2 rounded-full bg-green-500 mr-2"></span> Cash IN
+              </h3>
+              <Badge variant="outline" className="bg-green-100/50 dark:bg-green-900/20 text-green-700 dark:text-green-400 border-green-200 dark:border-green-800">
+                {cashInTxs.length} Transactions
+              </Badge>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Account Type
-              </label>
-              <Select 
-                value={editingAcc.type} 
-                onValueChange={(val: AccountType) => setEditingAcc({ ...editingAcc, type: val })}
-              >
-                <SelectTrigger className="focus:ring-orange-500 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-100">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="dark:bg-slate-950 dark:border-slate-800">
-                  <SelectItem value="bank">Bank Account</SelectItem>
-                  <SelectItem value="mobile">Mobile Money</SelectItem>
-                  <SelectItem value="cash">Cash in Hand</SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="overflow-x-auto flex-1">
+              <Table>
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent border-green-100 dark:border-slate-800">
+                    <TableHead>Date</TableHead>
+                    <TableHead>Details</TableHead>
+                    <TableHead className="text-right">Amount</TableHead>
+                    <TableHead className="text-right">Running Bal.</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {cashInTxs.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="text-center py-8 text-slate-400">No Cash IN transactions.</TableCell>
+                    </TableRow>
+                  ) : (
+                    cashInTxs.map(t => (
+                      <TableRow key={`split-in-${t.id}`} className="border-green-50 dark:border-slate-800/50">
+                        <TableCell className="text-xs text-slate-500 whitespace-nowrap">
+                          {new Date(t.date).toLocaleDateString("en-GB", { day: '2-digit', month: 'short' })}
+                        </TableCell>
+                        <TableCell>
+                          <div className="font-medium text-sm text-slate-900 dark:text-slate-100">{entities.find((e) => e.id === t.entityId)?.name}</div>
+                          <div className="text-[10px] text-slate-400 truncate max-w-[120px]">{t.desc || accounts.find((a) => a.id === t.accountId)?.name}</div>
+                        </TableCell>
+                        <TableCell className="text-right font-bold text-green-600 dark:text-green-400 text-sm">
+                          {formatMoney(calculateNet(t), settings.currency)}
+                        </TableCell>
+                        <TableCell className="text-right text-xs font-medium text-slate-600 dark:text-slate-400">
+                          {formatMoney(t.runningBalance, settings.currency)}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
             </div>
           </div>
-          <DialogFooter>
-            <Button 
-              variant="outline" 
-              onClick={() => setIsModalOpen(false)}
-              className="dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-            >
-              Cancel
-            </Button>
-            <Button 
-              onClick={handleSave} 
-              className="bg-slate-800 hover:bg-slate-900 dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900"
-            >
-              Save
-            </Button>
-          </DialogFooter>
+
+          {/* CASH OUT Card */}
+          <div className="bg-white dark:bg-slate-950 rounded-xl border border-red-200 dark:border-red-900/30 shadow-sm overflow-hidden flex flex-col">
+            <div className="bg-red-50 dark:bg-red-900/10 p-4 border-b border-red-100 dark:border-red-900/20 flex justify-between items-center">
+              <h3 className="font-semibold text-red-800 dark:text-red-400 flex items-center">
+                <span className="w-2 h-2 rounded-full bg-red-500 mr-2"></span> Cash OUT
+              </h3>
+              <Badge variant="outline" className="bg-red-100/50 dark:bg-red-900/20 text-red-700 dark:text-red-400 border-red-200 dark:border-red-800">
+                {cashOutTxs.length} Transactions
+              </Badge>
+            </div>
+            <div className="overflow-x-auto flex-1">
+              <Table>
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent border-red-100 dark:border-slate-800">
+                    <TableHead>Date</TableHead>
+                    <TableHead>Details</TableHead>
+                    <TableHead className="text-right">Amount</TableHead>
+                    <TableHead className="text-right">Running Bal.</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {cashOutTxs.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="text-center py-8 text-slate-400">No Cash OUT transactions.</TableCell>
+                    </TableRow>
+                  ) : (
+                    cashOutTxs.map(t => (
+                      <TableRow key={`split-out-${t.id}`} className="border-red-50 dark:border-slate-800/50">
+                        <TableCell className="text-xs text-slate-500 whitespace-nowrap">
+                          {new Date(t.date).toLocaleDateString("en-GB", { day: '2-digit', month: 'short' })}
+                        </TableCell>
+                        <TableCell>
+                          <div className="font-medium text-sm text-slate-900 dark:text-slate-100">{entities.find((e) => e.id === t.entityId)?.name}</div>
+                          <div className="text-[10px] text-slate-400 truncate max-w-[120px]">{t.desc || accounts.find((a) => a.id === t.accountId)?.name}</div>
+                        </TableCell>
+                        <TableCell className="text-right font-bold text-red-600 dark:text-red-400 text-sm">
+                          {formatMoney(calculateNet(t), settings.currency)}
+                        </TableCell>
+                        <TableCell className="text-right text-xs font-medium text-slate-600 dark:text-slate-400">
+                          {formatMoney(t.runningBalance, settings.currency)}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Document Viewer Modal */}
+      <Dialog open={viewerOpen} onOpenChange={setViewerOpen}>
+        <DialogContent className="sm:max-w-3xl bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800">
+          <DialogHeader>
+            <DialogTitle className="flex items-center text-slate-900 dark:text-slate-100">
+              <FileText className="w-5 h-5 mr-2" /> 
+              Document Vault: {activeDoc?.name}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="w-full bg-slate-100 dark:bg-slate-900 rounded-lg flex items-center justify-center p-4 min-h-[400px] border border-slate-200 dark:border-slate-800">
+            {activeDoc?.data.startsWith("data:image") ? (
+              <img src={activeDoc.data} alt="Receipt" className="max-w-full max-h-[60vh] object-contain rounded shadow-sm" />
+            ) : (
+              <div className="text-slate-500 dark:text-slate-400 flex flex-col items-center">
+                <FileText className="w-16 h-16 text-slate-300 dark:text-slate-700 mb-2" />
+                <p>PDF/File previewer available in production.</p>
+                <a href={activeDoc?.data} download={activeDoc?.name} className="mt-4 text-blue-600 dark:text-blue-400 hover:underline text-sm font-medium">
+                  Download File
+                </a>
+              </div>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
     </div>

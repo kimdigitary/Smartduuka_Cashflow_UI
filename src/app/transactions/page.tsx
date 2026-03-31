@@ -1,15 +1,19 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useLedger } from "@/context/LedgerContext";
 import { formatMoney, calculateNet, getStatusColor } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select as UISelect, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { CustomSelect } from "@/components/ui/CustomSelect"; // <-- Imported CustomSelect
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Download, Edit, Trash2, Paperclip, FileText, LayoutList, Columns } from "lucide-react";
+import { 
+  Download, Edit, Trash2, Paperclip, FileText, 
+  LayoutList, Columns, ChevronLeft, ChevronRight 
+} from "lucide-react";
 import { toast } from "sonner";
 import { mockTransactions, mockEntities, mockAccounts, mockSettings } from "@/types";
 
@@ -19,11 +23,20 @@ export default function TransactionsPage() {
   const [filterType, setFilterType] = useState("all");
   const [viewMode, setViewMode] = useState<"standard" | "split">("standard");
 
+  // Pagination State
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10); // Default to 10 for transactions
+
   // Vault Viewer State
   const [viewerOpen, setViewerOpen] = useState(false);
   const [activeDoc, setActiveDoc] = useState<{name: string, data: string} | null>(null);
 
   if (!isLoaded) return null;
+
+  // Reset to first page when searching or filtering
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, filterType]);
 
   // ========================================================================
   // DUMMY DATA
@@ -56,11 +69,37 @@ export default function TransactionsPage() {
     return calculated.reverse(); // Show newest at the top
   }, [filteredTxs]);
 
-  // Split view arrays
+  // ========================================================================
+  // PAGINATION LOGIC
+  // ========================================================================
+  const totalPages = Math.ceil(txsWithBalance.length / itemsPerPage);
+  const paginatedTxs = txsWithBalance.slice(
+    (currentPage - 1) * itemsPerPage, 
+    currentPage * itemsPerPage
+  );
+
+  const pageNumbers = Array.from({ length: totalPages }, (_, i) => i + 1);
+
+  const handleNextPage = () => {
+    if (currentPage < totalPages) setCurrentPage((prev) => prev + 1);
+  };
+
+  const handlePrevPage = () => {
+    if (currentPage > 1) setCurrentPage((prev) => prev - 1);
+  };
+
+  const rowOptions = [
+    { value: 5, label: "5 Rows" },
+    { value: 10, label: "10 Rows" },
+    { value: 20, label: "20 Rows" },
+    { value: 50, label: "50 Rows" },
+  ];
+
+  // Split view arrays (We map these from the full list so split view shows everything, or you can switch this to paginatedTxs if preferred)
   const cashInTxs = txsWithBalance.filter(t => t.type === "in");
   const cashOutTxs = txsWithBalance.filter(t => t.type === "out");
 
-  // Updated CSV Export to match new columns
+  // Updated CSV Export
   const exportCSV = () => {
     if (!txsWithBalance.length) return toast.error("No data to export");
     let csv = "Date,Entity,Account,Cash In,Cash Out,Balance,Status,Description\n";
@@ -82,6 +121,15 @@ export default function TransactionsPage() {
     a.download = `ledger_export_${new Date().toISOString().split("T")[0]}.csv`;
     a.click();
     toast.success("Export successful");
+  };
+
+  const handleDelete = (id: string) => {
+    if(confirm("Permanently delete this record?")) {
+      deleteTransaction(id);
+      if (paginatedTxs.length === 1 && currentPage > 1) {
+        setCurrentPage((prev) => prev - 1);
+      }
+    }
   };
 
   const openViewer = (name: string, data: string) => {
@@ -149,7 +197,7 @@ export default function TransactionsPage() {
             <button className="text-slate-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
               <Edit className="w-4 h-4 inline" />
             </button>
-            <button onClick={() => { if(confirm("Permanently delete this record?")) deleteTransaction(t.id); }} className="text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400 transition-colors">
+            <button onClick={() => handleDelete(t.id)} className="text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400 transition-colors">
               <Trash2 className="w-4 h-4 inline" />
             </button>
           </TableCell>
@@ -169,7 +217,7 @@ export default function TransactionsPage() {
             onChange={(e) => setSearchTerm(e.target.value)} 
             className="flex-1 focus-visible:ring-orange-500 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500" 
           />
-          <Select value={filterType} onValueChange={setFilterType}>
+          <UISelect value={filterType} onValueChange={setFilterType}>
             <SelectTrigger className="w-full sm:w-[150px] focus:ring-orange-500 dark:bg-slate-900 dark:border-slate-800 dark:text-slate-100">
               <SelectValue placeholder="All Types" />
             </SelectTrigger>
@@ -178,7 +226,7 @@ export default function TransactionsPage() {
               <SelectItem value="in">Cash In</SelectItem>
               <SelectItem value="out">Cash Out</SelectItem>
             </SelectContent>
-          </Select>
+          </UISelect>
         </div>
 
         <div className="flex items-center space-x-2 w-full sm:w-auto">
@@ -211,31 +259,100 @@ export default function TransactionsPage() {
       {/* VIEW: STANDARD TABLE */}
       {viewMode === "standard" && (
         <div className="bg-white dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden transition-colors duration-200">
-          <Table>
-            <TableHeader className="bg-slate-50/50 dark:bg-slate-900/50">
-              <TableRow className="dark:border-slate-800 hover:bg-transparent">
-                <TableHead className="dark:text-slate-400">Date/Time</TableHead>
-                <TableHead className="dark:text-slate-400">Entity & Details</TableHead>
-                <TableHead className="dark:text-slate-400">Account</TableHead>
-                <TableHead className="text-right dark:text-slate-400">Cash IN</TableHead>
-                <TableHead className="text-right dark:text-slate-400">Cash OUT</TableHead>
-                <TableHead className="text-right dark:text-slate-400 font-semibold">Balance</TableHead>
-                <TableHead className="text-center dark:text-slate-400">Status</TableHead>
-                <TableHead className="text-right dark:text-slate-400">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {txsWithBalance.length === 0 ? (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader className="bg-slate-50/50 dark:bg-slate-900/50">
                 <TableRow className="dark:border-slate-800 hover:bg-transparent">
-                  <TableCell colSpan={8} className="text-center py-8 text-slate-500 dark:text-slate-400">
-                    No transactions found.
-                  </TableCell>
+                  <TableHead className="dark:text-slate-400">Date/Time</TableHead>
+                  <TableHead className="dark:text-slate-400">Entity & Details</TableHead>
+                  <TableHead className="dark:text-slate-400">Account</TableHead>
+                  <TableHead className="text-right dark:text-slate-400">Cash IN</TableHead>
+                  <TableHead className="text-right dark:text-slate-400">Cash OUT</TableHead>
+                  <TableHead className="text-right dark:text-slate-400 font-semibold">Balance</TableHead>
+                  <TableHead className="text-center dark:text-slate-400">Status</TableHead>
+                  <TableHead className="text-right dark:text-slate-400">Actions</TableHead>
                 </TableRow>
-              ) : (
-                txsWithBalance.slice(0, settings.pageSize === "all" ? undefined : parseInt(settings.pageSize)).map(t => renderTableRow(t, true))
-              )}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {txsWithBalance.length === 0 ? (
+                  <TableRow className="dark:border-slate-800 hover:bg-transparent">
+                    <TableCell colSpan={8} className="text-center py-8 text-slate-500 dark:text-slate-400">
+                      No transactions found.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  paginatedTxs.map(t => renderTableRow(t, true))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+
+          {/* ======================================================= */}
+          {/* PAGINATION & ROW SELECTOR CONTROLS */}
+          {/* ======================================================= */}
+          {txsWithBalance.length > 0 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50/30 dark:bg-slate-900/30">
+              
+              <div className="flex items-center gap-4 w-full sm:w-auto">
+                <div className="w-32">
+                  <CustomSelect
+                    options={rowOptions}
+                    value={itemsPerPage}
+                    onChange={(val) => {
+                      setItemsPerPage(Number(val));
+                      setCurrentPage(1); 
+                    }}
+                    placement="top" 
+                    className="bg-white dark:bg-slate-950"
+                  />
+                </div>
+                <span className="text-sm text-slate-500 dark:text-slate-400 hidden sm:inline-block">
+                  Showing <span className="font-medium text-slate-900 dark:text-slate-200">{((currentPage - 1) * itemsPerPage) + 1}</span> to <span className="font-medium text-slate-900 dark:text-slate-200">{Math.min(currentPage * itemsPerPage, txsWithBalance.length)}</span> of <span className="font-medium text-slate-900 dark:text-slate-200">{txsWithBalance.length}</span> entries
+                </span>
+              </div>
+              
+              <div className="flex items-center space-x-1">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handlePrevPage}
+                  disabled={currentPage === 1}
+                  className="w-8 h-8 border-orange-200 text-orange-600 hover:bg-orange-50 disabled:opacity-50 disabled:border-slate-200 disabled:text-slate-400 dark:border-orange-900/50 dark:text-orange-500 dark:hover:bg-orange-900/20 dark:disabled:border-slate-800 dark:disabled:text-slate-600 transition-colors"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </Button>
+                
+                {pageNumbers.map((pageNum) => {
+                  const isActive = currentPage === pageNum;
+                  return (
+                    <Button
+                      key={pageNum}
+                      variant={isActive ? "default" : "outline"}
+                      size="icon"
+                      onClick={() => setCurrentPage(pageNum)}
+                      className={`w-8 h-8 transition-colors ${
+                        isActive 
+                          ? "bg-orange-500 text-white hover:bg-orange-600 border-orange-500 dark:bg-orange-500 dark:text-white dark:hover:bg-orange-600" 
+                          : "border-orange-200 text-orange-500 hover:bg-orange-50 dark:border-orange-900/50 dark:text-orange-500 dark:hover:bg-orange-900/20"
+                      }`}
+                    >
+                      {pageNum}
+                    </Button>
+                  );
+                })}
+
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleNextPage}
+                  disabled={currentPage >= totalPages}
+                  className="w-8 h-8 border-orange-200 text-orange-600 hover:bg-orange-50 disabled:opacity-50 disabled:border-slate-200 disabled:text-slate-400 dark:border-orange-900/50 dark:text-orange-500 dark:hover:bg-orange-900/20 dark:disabled:border-slate-800 dark:disabled:text-slate-600 transition-colors"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

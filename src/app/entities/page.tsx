@@ -9,14 +9,19 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Edit, Trash2, Plus, Printer } from "lucide-react";
+import { CustomSelect } from "@/components/ui/CustomSelect"; // <-- Imported CustomSelect
+import { Edit, Trash2, Plus, Printer, ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
-import { mockTransactions, mockEntities, mockSettings } from "@/types"; // <-- Imported Dummy Data
+import { mockTransactions, mockEntities, mockSettings } from "@/types"; 
 
 export default function EntitiesPage() {
-  const { addEntity, updateEntity, deleteEntity, isLoaded } = useLedger(); // Kept for hydration and actions
+  const { addEntity, updateEntity, deleteEntity, isLoaded } = useLedger(); 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingEnt, setEditingEnt] = useState<Partial<Entity>>({ type: "client" });
+
+  // Pagination State
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
 
   if (!isLoaded) return null;
 
@@ -27,6 +32,35 @@ export default function EntitiesPage() {
   const entities = mockEntities;
   const settings = mockSettings;
 
+  // ========================================================================
+  // PAGINATION LOGIC
+  // ========================================================================
+  const totalPages = Math.ceil(entities.length / itemsPerPage);
+  const paginatedEntities = entities.slice(
+    (currentPage - 1) * itemsPerPage, 
+    currentPage * itemsPerPage
+  );
+
+  const pageNumbers = Array.from({ length: totalPages }, (_, i) => i + 1);
+
+  const handleNextPage = () => {
+    if (currentPage < totalPages) setCurrentPage((prev) => prev + 1);
+  };
+
+  const handlePrevPage = () => {
+    if (currentPage > 1) setCurrentPage((prev) => prev - 1);
+  };
+
+  const rowOptions = [
+    { value: 5, label: "5 Rows" },
+    { value: 10, label: "10 Rows" },
+    { value: 20, label: "20 Rows" },
+    { value: 50, label: "50 Rows" },
+  ];
+
+  // ========================================================================
+  // HANDLERS
+  // ========================================================================
   const handleSave = () => {
     if (!editingEnt.name) return toast.error("Entity name is required");
     if (editingEnt.id) updateEntity(editingEnt as Entity);
@@ -36,7 +70,13 @@ export default function EntitiesPage() {
 
   const handleDelete = (id: string) => {
     if (transactions.some((t) => t.entityId === id)) return toast.error("Cannot delete entity: It has linked transactions.");
-    if (confirm("Delete this entity?")) deleteEntity(id);
+    if (confirm("Delete this entity?")) {
+      deleteEntity(id);
+      // Adjust pagination if deleting the last item on the current page
+      if (paginatedEntities.length === 1 && currentPage > 1) {
+        setCurrentPage((prev) => prev - 1);
+      }
+    }
   };
 
   const openModal = (ent?: Entity) => {
@@ -93,7 +133,7 @@ export default function EntitiesPage() {
           </Button>
         </div>
 
-        {/* Table */}
+        {/* Table Container */}
         <div className="overflow-x-auto">
           <Table>
             <TableHeader className="bg-slate-50/50 dark:bg-slate-900/50">
@@ -113,7 +153,7 @@ export default function EntitiesPage() {
                   </TableCell>
                 </TableRow>
               ) : (
-                entities.map((ent) => {
+                paginatedEntities.map((ent) => { // <-- Using paginated array here
                   let cleared = 0, outstanding = 0;
                   transactions.filter((t) => t.entityId === ent.id).forEach((t) => {
                     const signedNet = t.type === "in" ? calculateNet(t) : -calculateNet(t);
@@ -129,13 +169,13 @@ export default function EntitiesPage() {
                         {formatMoney(Math.abs(outstanding), settings.currency)} {outstanding !== 0 && (outstanding > 0 ? "(AR)" : "(AP)")}
                       </TableCell>
                       <TableCell className="text-right space-x-2 whitespace-nowrap">
-                        <button onClick={() => printStatement(ent)} className="text-slate-400 dark:text-slate-500 hover:text-orange-600 dark:hover:text-orange-400 transition-colors p-1">
+                        <button onClick={() => printStatement(ent)} className="text-slate-400 dark:text-slate-500 hover:text-orange-600 dark:hover:text-orange-400 transition-colors p-1" title="Print Statement">
                           <Printer className="w-4 h-4 inline" />
                         </button>
-                        <button onClick={() => openModal(ent)} className="text-slate-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors p-1">
+                        <button onClick={() => openModal(ent)} className="text-slate-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors p-1" title="Edit Entity">
                           <Edit className="w-4 h-4 inline" />
                         </button>
-                        <button onClick={() => handleDelete(ent.id)} className="text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400 transition-colors p-1">
+                        <button onClick={() => handleDelete(ent.id)} className="text-slate-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400 transition-colors p-1" title="Delete Entity">
                           <Trash2 className="w-4 h-4 inline" />
                         </button>
                       </TableCell>
@@ -146,6 +186,73 @@ export default function EntitiesPage() {
             </TableBody>
           </Table>
         </div>
+
+        {/* ======================================================= */}
+        {/* PAGINATION & ROW SELECTOR CONTROLS */}
+        {/* ======================================================= */}
+        {entities.length > 0 && (
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50/30 dark:bg-slate-900/30">
+            
+            <div className="flex items-center gap-4 w-full sm:w-auto">
+              <div className="w-32">
+                <CustomSelect
+                  options={rowOptions}
+                  value={itemsPerPage}
+                  onChange={(val) => {
+                    setItemsPerPage(Number(val));
+                    setCurrentPage(1); // Reset to first page when changing row count
+                  }}
+                  placement="top" 
+                  className="bg-white dark:bg-slate-950"
+                />
+              </div>
+              <span className="text-sm text-slate-500 dark:text-slate-400 hidden sm:inline-block">
+                Showing <span className="font-medium text-slate-900 dark:text-slate-200">{((currentPage - 1) * itemsPerPage) + 1}</span> to <span className="font-medium text-slate-900 dark:text-slate-200">{Math.min(currentPage * itemsPerPage, entities.length)}</span> of <span className="font-medium text-slate-900 dark:text-slate-200">{entities.length}</span> entries
+              </span>
+            </div>
+            
+            <div className="flex items-center space-x-1">
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={handlePrevPage}
+                disabled={currentPage === 1}
+                className="w-8 h-8 border-orange-200 text-orange-600 hover:bg-orange-50 disabled:opacity-50 disabled:border-slate-200 disabled:text-slate-400 dark:border-orange-900/50 dark:text-orange-500 dark:hover:bg-orange-900/20 dark:disabled:border-slate-800 dark:disabled:text-slate-600 transition-colors"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </Button>
+              
+              {pageNumbers.map((pageNum) => {
+                const isActive = currentPage === pageNum;
+                return (
+                  <Button
+                    key={pageNum}
+                    variant={isActive ? "default" : "outline"}
+                    size="icon"
+                    onClick={() => setCurrentPage(pageNum)}
+                    className={`w-8 h-8 transition-colors ${
+                      isActive 
+                        ? "bg-orange-500 text-white hover:bg-orange-600 border-orange-500 dark:bg-orange-500 dark:text-white dark:hover:bg-orange-600" 
+                        : "border-orange-200 text-orange-500 hover:bg-orange-50 dark:border-orange-900/50 dark:text-orange-500 dark:hover:bg-orange-900/20"
+                    }`}
+                  >
+                    {pageNum}
+                  </Button>
+                );
+              })}
+
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={handleNextPage}
+                disabled={currentPage >= totalPages}
+                className="w-8 h-8 border-orange-200 text-orange-600 hover:bg-orange-50 disabled:opacity-50 disabled:border-slate-200 disabled:text-slate-400 dark:border-orange-900/50 dark:text-orange-500 dark:hover:bg-orange-900/20 dark:disabled:border-slate-800 dark:disabled:text-slate-600 transition-colors"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Modal Form */}

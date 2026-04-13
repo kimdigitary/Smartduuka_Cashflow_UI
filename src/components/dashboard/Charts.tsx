@@ -229,7 +229,7 @@ export function DashboardCharts() {
             <Chart options={runwayOptions} series={runwaySeries} type="area" height="100%" />
           ) : (
             <div className="flex flex-col items-center justify-center h-full mt-4 text-slate-400 dark:text-slate-500 bg-slate-50/50 dark:bg-slate-900/20 rounded-lg border border-dashed border-slate-200 dark:border-slate-800">
-              <p className="text-sm">Add some drafted or approved future transactions to see your forecast.</p>
+              <p className="text-sm">Add some drafted or approved future transactions to see your forecast here.</p>
             </div>
           )}
         </div>
